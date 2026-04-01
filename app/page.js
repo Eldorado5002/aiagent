@@ -6,11 +6,13 @@ import { useState, useRef, useEffect, useCallback } from "react";
    ═══════════════════════════════════════════════ */
 
 const FALLBACK_TRENDS = [
-  { category: "Tech",    topic: "AI agents reshaping software in 2026" },
-  { category: "Sports",  topic: "IPL 2026 opening week highlights" },
-  { category: "Science", topic: "Quantum computing hits new milestone" },
-  { category: "World",   topic: "G20 summit latest outcomes" },
+  { category: "Tech",    topic: "AI agents reshaping software in 2026",  icon: "💻" },
+  { category: "Sports",  topic: "IPL 2026 opening week highlights",     icon: "🏅" },
+  { category: "Science", topic: "Quantum computing hits new milestone",  icon: "🔬" },
+  { category: "World",   topic: "G20 summit latest outcomes",           icon: "🌍" },
 ];
+
+const TREND_ICONS = { Tech: "💻", Sports: "🏅", Science: "🔬", World: "🌍", Entertainment: "🎬", Business: "📈" };
 
 const MEM_LABELS = {
   name: "👤 Name", age: "🎂 Age", location: "📍 Location",
@@ -60,7 +62,8 @@ export default function AgentX() {
   const [typing, setTyping]         = useState(false);
   const [toast, setToast]           = useState("");
   const [modalOpen, setModalOpen]   = useState(false);
-  const [selectedTopic, setSelectedTopic] = useState("");
+  const [cmdFilter, setCmdFilter]   = useState("");
+  const [cmdIndex, setCmdIndex]     = useState(0);
   const [isVisitor, setIsVisitor]   = useState(false);
   const [ownerMem, setOwnerMem]     = useState({});
 
@@ -95,18 +98,50 @@ export default function AgentX() {
     msgEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, typing]);
 
-  /* ── System prompt builders ────────────────── */
+  /* ── System prompt builders (depth-aware) ──── */
   const ownerSys = useCallback((greeting = false) => {
     const mem = Object.keys(memoryRef.current).length
       ? `What you know about this person: ${JSON.stringify(memoryRef.current)}`
       : "You don't know much yet — learn as you go.";
-    return `You are AgentX, a curious and warm AI conversation buddy.
+
+    // Calculate depth for system prompt
+    const userMsgCount = historyRef.current.filter(m => m.role === "user").length;
+    let depthRules = "";
+    if (userMsgCount < 4) {
+      // INTRO — warm, welcoming, profile-building
+      depthRules = `Conversation Stage: INTRO (${userMsgCount}/4 messages)
+- Be warm and welcoming. Focus on getting to know them.
+- Ask gentle, open-ended questions about their life, interests, or background.
+- If they share a fact (name, location, hobby), acknowledge it enthusiastically.
+- Keep the tone light and friendly. Don't go too deep yet.`;
+    } else if (userMsgCount < 10) {
+      // GETTING TO KNOW — personalized, connecting dots
+      depthRules = `Conversation Stage: GETTING TO KNOW (${userMsgCount}/10 messages)
+- You're now familiar with this person. Reference their known interests and goals.
+- Start connecting the current topic to things they've told you before.
+- If they mentioned an interest, relate the topic back to it naturally.
+- Be more specific and thoughtful in your responses. Show you're paying attention.
+- Share interesting facts, analogies, or perspectives relevant to their background.`;
+    } else {
+      // DEEP DIVE — intellectual, insightful, challenging
+      depthRules = `Conversation Stage: DEEP DIVE (${userMsgCount} messages deep)
+- You know this person well now. Act like a brilliant, trusted friend.
+- Offer profound insights, unique perspectives, and nuanced analysis.
+- Respectfully challenge their views when appropriate — push them to think deeper.
+- Reference specific things they said in earlier messages to show continuity.
+- Provide advanced, technical, or philosophical depth when the topic allows.
+- Your tone should be confident, engaging, and intellectually stimulating.`;
+    }
+
+    return `You are AgentX, a curious and evolving AI conversation buddy.
 Current topic: "${topicRef.current}"
 ${mem}
-Rules:
+
+${depthRules}
+
+Core Rules:
 - Keep replies to 3-5 sentences. Be engaging and natural.
 - Ask exactly ONE follow-up question per reply.
-- Naturally reference what you know about the person to personalise.
 ${greeting ? "- Open with an exciting hook about the topic." : ""}`;
   }, []);
 
@@ -263,11 +298,12 @@ No extra text. No markdown.`;
     inputRef.current?.focus();
   }, [busy, isVisitor, ownerSys, visitorSys, save, addMsg, extractMemory]);
 
-  const confirmSwitch = useCallback(async () => {
-    const t = selectedTopic.trim() || newTopicRef.current?.value?.trim();
+  const confirmSwitch = useCallback(async (overrideTopic) => {
+    const t = (overrideTopic || cmdFilter || "").trim();
     if (!t) return;
     setModalOpen(false);
-    setSelectedTopic("");
+    setCmdFilter("");
+    setCmdIndex(0);
     setTopic(t);
     topicRef.current = t;
     save(memoryRef.current, historyRef.current, t);
@@ -441,6 +477,69 @@ Rules:
   const showDepth = screen === "chat" && history.length > 0;
   const userInit = (isVisitor ? "V" : (memory.name?.[0] || "U")).toUpperCase();
 
+  /* ── Command palette items ─────────────────── */
+  const cmdItems = (() => {
+    const items = [];
+    const q = cmdFilter.toLowerCase();
+
+    // Personalized picks
+    if (Array.isArray(memory.interests)) {
+      memory.interests.forEach(i => items.push({ section: "personalized", label: i, icon: "❤️", sub: "Your Interest" }));
+    }
+    if (Array.isArray(memory.goals)) {
+      memory.goals.forEach(g => items.push({ section: "personalized", label: g, icon: "🎯", sub: "Your Goal" }));
+    }
+    if (memory.background) {
+      items.push({ section: "personalized", label: memory.background, icon: "🎓", sub: "Your Background" });
+    }
+
+    // Recent topics
+    const recent = (Array.isArray(memory.topics_discussed) ? memory.topics_discussed : [])
+      .filter(t => t !== topic)
+      .reverse();
+    recent.forEach(t => items.push({ section: "recent", label: t, icon: "↩", sub: "Recent" }));
+
+    // Trending
+    trends.forEach(t => items.push({
+      section: "trending",
+      label: t.topic,
+      icon: TREND_ICONS[t.category] || "🔥",
+      sub: t.category
+    }));
+
+    // Filter
+    const filtered = q ? items.filter(i => i.label.toLowerCase().includes(q)) : items;
+
+    // Add "new chat" option if typing something custom
+    if (q && !filtered.some(i => i.label.toLowerCase() === q)) {
+      filtered.unshift({ section: "new", label: cmdFilter.trim(), icon: "✨", sub: "Start new chat" });
+    }
+
+    return filtered;
+  })();
+
+  /* ── Command palette keyboard handler ───────── */
+  const handleCmdKey = (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setCmdIndex(prev => Math.min(prev + 1, cmdItems.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setCmdIndex(prev => Math.max(prev - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (cmdItems.length > 0) {
+        confirmSwitch(cmdItems[cmdIndex]?.label);
+      } else if (cmdFilter.trim()) {
+        confirmSwitch(cmdFilter.trim());
+      }
+    } else if (e.key === "Escape") {
+      setModalOpen(false);
+      setCmdFilter("");
+      setCmdIndex(0);
+    }
+  };
+
   /* ── Auto resize textarea ──────────────────── */
   const autoResize = (el) => {
     el.style.height = "auto";
@@ -596,106 +695,76 @@ Rules:
           </div>
 
           <div className={`sidebar-footer${screen === "chat" ? " visible" : ""}`}>
-            <button className="switch-btn" onClick={() => { setModalOpen(true); }}>↻ Switch Topic</button>
+            <button className="switch-btn" onClick={() => { setModalOpen(true); setCmdFilter(""); setCmdIndex(0); }}>↻ Switch Topic</button>
             {!isVisitor && <button className="share-btn" onClick={shareAgent}>🔗 Share My Agent</button>}
           </div>
         </aside>
       </div>
 
-      {/* ═══ SWITCH TOPIC MODAL ═══ */}
-      <div className={`overlay${modalOpen ? " open" : ""}`} onClick={(e) => { if (e.target === e.currentTarget) setModalOpen(false); }}>
-        <div className="modal">
-          <div className="modal-title">Switch Topic</div>
-          <div className="modal-sub">
-            {topic ? <>Currently: <strong>{topic}</strong> · Your memory carries forward.</> : "Your memory carries forward to the new topic."}
+      {/* ═══ COMMAND PALETTE MODAL ═══ */}
+      <div className={`cmd-overlay${modalOpen ? " open" : ""}`} onClick={(e) => { if (e.target === e.currentTarget) { setModalOpen(false); setCmdFilter(""); setCmdIndex(0); } }}>
+        <div className="cmd-palette">
+          {/* Header */}
+          <div className="cmd-header">
+            <div className="cmd-search-icon">⌘</div>
+            <input
+              ref={newTopicRef}
+              className="cmd-input"
+              type="text"
+              placeholder="Search topics or type something new…"
+              value={cmdFilter}
+              onChange={(e) => { setCmdFilter(e.target.value); setCmdIndex(0); }}
+              onKeyDown={handleCmdKey}
+              autoFocus
+            />
+            <kbd className="cmd-esc" onClick={() => { setModalOpen(false); setCmdFilter(""); setCmdIndex(0); }}>ESC</kbd>
           </div>
-          <input
-            ref={newTopicRef}
-            type="text"
-            placeholder="Enter new topic…"
-            value={selectedTopic}
-            onChange={(e) => setSelectedTopic(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") confirmSwitch(); }}
-          />
+          {topic && (
+            <div className="cmd-current">Currently: <strong>{topic}</strong> · Memory carries forward</div>
+          )}
 
-          {/* Personalized Picks from memory */}
-          {(() => {
-            const picks = [];
-            if (Array.isArray(memory.interests)) {
-              memory.interests.slice(0, 3).forEach(i => picks.push({ category: "Your Interest", topic: i, icon: "❤️" }));
-            }
-            if (Array.isArray(memory.goals)) {
-              memory.goals.slice(0, 2).forEach(g => picks.push({ category: "Your Goal", topic: g, icon: "🎯" }));
-            }
-            if (memory.background && picks.length < 4) {
-              picks.push({ category: "Your Background", topic: memory.background, icon: "🎓" });
-            }
-            if (!picks.length) return null;
-            return (
-              <div className="modal-section">
-                <div className="modal-section-label">✨ Personalized for You</div>
-                <div className="modal-picks">
-                  {picks.slice(0, 4).map((p, i) => (
-                    <div
-                      key={`pick-${i}`}
-                      className={`pick-chip${selectedTopic === p.topic ? " selected" : ""}`}
-                      onClick={() => { setSelectedTopic(p.topic); }}
-                    >
-                      <span className="pick-icon">{p.icon}</span>
-                      <span className="pick-text">{p.topic}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
+          {/* Results */}
+          <div className="cmd-results">
+            {cmdItems.length === 0 && (
+              <div className="cmd-empty">No matches found. Press <kbd>Enter</kbd> to start a new chat.</div>
+            )}
 
-          {/* Recent Topics */}
-          {(() => {
-            const recent = (Array.isArray(memory.topics_discussed) ? memory.topics_discussed : [])
-              .filter(t => t !== topic)
-              .slice(-4)
-              .reverse();
-            if (!recent.length) return null;
-            return (
-              <div className="modal-section">
-                <div className="modal-section-label">🕐 Recent Topics</div>
-                <div className="modal-picks">
-                  {recent.map((t, i) => (
-                    <div
-                      key={`recent-${i}`}
-                      className={`pick-chip recent${selectedTopic === t ? " selected" : ""}`}
-                      onClick={() => { setSelectedTopic(t); }}
-                    >
-                      <span className="pick-icon">↩</span>
-                      <span className="pick-text">{t}</span>
-                    </div>
-                  ))}
+            {/* Group by section */}
+            {["new", "personalized", "recent", "trending"].map(section => {
+              const sectionItems = cmdItems.filter(i => i.section === section);
+              if (!sectionItems.length) return null;
+              const sectionLabels = { new: "✨ New Topic", personalized: "✨ For You", recent: "🕐 Recent", trending: "🔥 Trending" };
+              return (
+                <div key={section} className="cmd-section">
+                  <div className="cmd-section-label">{sectionLabels[section]}</div>
+                  {sectionItems.map((item) => {
+                    const globalIdx = cmdItems.indexOf(item);
+                    return (
+                      <div
+                        key={`${section}-${globalIdx}`}
+                        className={`cmd-item${globalIdx === cmdIndex ? " active" : ""}`}
+                        onClick={() => confirmSwitch(item.label)}
+                        onMouseEnter={() => setCmdIndex(globalIdx)}
+                      >
+                        <span className="cmd-item-icon">{item.icon}</span>
+                        <div className="cmd-item-body">
+                          <span className="cmd-item-label">{item.label}</span>
+                          <span className="cmd-item-sub">{item.sub}</span>
+                        </div>
+                        {globalIdx === cmdIndex && <span className="cmd-item-enter">↵</span>}
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-            );
-          })()}
-
-          {/* Trending */}
-          <div className="modal-section">
-            <div className="modal-section-label">🔥 Trending</div>
-            <div className="modal-trends">
-              {trends.map((t, i) => (
-                <div
-                  key={i}
-                  className={`trend-card${selectedTopic === t.topic ? " selected" : ""}`}
-                  onClick={() => { setSelectedTopic(t.topic); }}
-                >
-                  <div className="trend-cat">{t.category}</div>
-                  <div className="trend-topic">{t.topic}</div>
-                </div>
-              ))}
-            </div>
+              );
+            })}
           </div>
 
-          <div className="modal-actions">
-            <button className="modal-cancel" onClick={() => { setModalOpen(false); setSelectedTopic(""); }}>Cancel</button>
-            <button className="modal-confirm" disabled={!selectedTopic.trim()} onClick={confirmSwitch}>Switch →</button>
+          {/* Footer */}
+          <div className="cmd-footer">
+            <span><kbd>↑↓</kbd> Navigate</span>
+            <span><kbd>↵</kbd> Select</span>
+            <span><kbd>Esc</kbd> Close</span>
           </div>
         </div>
       </div>
