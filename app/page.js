@@ -60,6 +60,7 @@ export default function AgentX() {
   const [typing, setTyping]         = useState(false);
   const [toast, setToast]           = useState("");
   const [modalOpen, setModalOpen]   = useState(false);
+  const [selectedTopic, setSelectedTopic] = useState("");
   const [isVisitor, setIsVisitor]   = useState(false);
   const [ownerMem, setOwnerMem]     = useState({});
 
@@ -263,9 +264,10 @@ No extra text. No markdown.`;
   }, [busy, isVisitor, ownerSys, visitorSys, save, addMsg, extractMemory]);
 
   const confirmSwitch = useCallback(async () => {
-    const t = newTopicRef.current?.value?.trim();
+    const t = selectedTopic.trim() || newTopicRef.current?.value?.trim();
     if (!t) return;
     setModalOpen(false);
+    setSelectedTopic("");
     setTopic(t);
     topicRef.current = t;
     save(memoryRef.current, historyRef.current, t);
@@ -601,27 +603,99 @@ Rules:
       </div>
 
       {/* ═══ SWITCH TOPIC MODAL ═══ */}
-      <div className={`overlay${modalOpen ? " open" : ""}`}>
+      <div className={`overlay${modalOpen ? " open" : ""}`} onClick={(e) => { if (e.target === e.currentTarget) setModalOpen(false); }}>
         <div className="modal">
           <div className="modal-title">Switch Topic</div>
-          <div className="modal-sub">Your memory carries forward to the new topic.</div>
+          <div className="modal-sub">
+            {topic ? <>Currently: <strong>{topic}</strong> · Your memory carries forward.</> : "Your memory carries forward to the new topic."}
+          </div>
           <input
             ref={newTopicRef}
             type="text"
             placeholder="Enter new topic…"
+            value={selectedTopic}
+            onChange={(e) => setSelectedTopic(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") confirmSwitch(); }}
           />
-          <div className="modal-trends">
-            {trends.map((t, i) => (
-              <div key={i} className="trend-card" onClick={() => { if (newTopicRef.current) newTopicRef.current.value = t.topic; }}>
-                <div className="trend-cat">{t.category}</div>
-                <div className="trend-topic">{t.topic}</div>
+
+          {/* Personalized Picks from memory */}
+          {(() => {
+            const picks = [];
+            if (Array.isArray(memory.interests)) {
+              memory.interests.slice(0, 3).forEach(i => picks.push({ category: "Your Interest", topic: i, icon: "❤️" }));
+            }
+            if (Array.isArray(memory.goals)) {
+              memory.goals.slice(0, 2).forEach(g => picks.push({ category: "Your Goal", topic: g, icon: "🎯" }));
+            }
+            if (memory.background && picks.length < 4) {
+              picks.push({ category: "Your Background", topic: memory.background, icon: "🎓" });
+            }
+            if (!picks.length) return null;
+            return (
+              <div className="modal-section">
+                <div className="modal-section-label">✨ Personalized for You</div>
+                <div className="modal-picks">
+                  {picks.slice(0, 4).map((p, i) => (
+                    <div
+                      key={`pick-${i}`}
+                      className={`pick-chip${selectedTopic === p.topic ? " selected" : ""}`}
+                      onClick={() => { setSelectedTopic(p.topic); }}
+                    >
+                      <span className="pick-icon">{p.icon}</span>
+                      <span className="pick-text">{p.topic}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
+            );
+          })()}
+
+          {/* Recent Topics */}
+          {(() => {
+            const recent = (Array.isArray(memory.topics_discussed) ? memory.topics_discussed : [])
+              .filter(t => t !== topic)
+              .slice(-4)
+              .reverse();
+            if (!recent.length) return null;
+            return (
+              <div className="modal-section">
+                <div className="modal-section-label">🕐 Recent Topics</div>
+                <div className="modal-picks">
+                  {recent.map((t, i) => (
+                    <div
+                      key={`recent-${i}`}
+                      className={`pick-chip recent${selectedTopic === t ? " selected" : ""}`}
+                      onClick={() => { setSelectedTopic(t); }}
+                    >
+                      <span className="pick-icon">↩</span>
+                      <span className="pick-text">{t}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Trending */}
+          <div className="modal-section">
+            <div className="modal-section-label">🔥 Trending</div>
+            <div className="modal-trends">
+              {trends.map((t, i) => (
+                <div
+                  key={i}
+                  className={`trend-card${selectedTopic === t.topic ? " selected" : ""}`}
+                  onClick={() => { setSelectedTopic(t.topic); }}
+                >
+                  <div className="trend-cat">{t.category}</div>
+                  <div className="trend-topic">{t.topic}</div>
+                </div>
+              ))}
+            </div>
           </div>
+
           <div className="modal-actions">
-            <button className="modal-cancel" onClick={() => setModalOpen(false)}>Cancel</button>
-            <button className="modal-confirm" onClick={confirmSwitch}>Switch →</button>
+            <button className="modal-cancel" onClick={() => { setModalOpen(false); setSelectedTopic(""); }}>Cancel</button>
+            <button className="modal-confirm" disabled={!selectedTopic.trim()} onClick={confirmSwitch}>Switch →</button>
           </div>
         </div>
       </div>
