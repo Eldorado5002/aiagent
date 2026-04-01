@@ -1,31 +1,18 @@
 "use client";
 import { useState, useRef, useEffect, useCallback } from "react";
+import config from "../agent.config";
 
 /* ═══════════════════════════════════════════════
    AgentX — Main Application Component
+   All customization lives in agent.config.js
    ═══════════════════════════════════════════════ */
 
-const FALLBACK_TRENDS = [
-  { category: "Tech",    topic: "AI agents reshaping software in 2026",  icon: "💻" },
-  { category: "Sports",  topic: "IPL 2026 opening week highlights",     icon: "🏅" },
-  { category: "Science", topic: "Quantum computing hits new milestone",  icon: "🔬" },
-  { category: "World",   topic: "G20 summit latest outcomes",           icon: "🌍" },
-];
-
-const TREND_ICONS = { Tech: "💻", Sports: "🏅", Science: "🔬", World: "🌍", Entertainment: "🎬", Business: "📈" };
-
-const MEM_LABELS = {
-  name: "👤 Name", age: "🎂 Age", location: "📍 Location",
-  background: "🎓 Background", interests: "❤️ Interests",
-  goals: "🎯 Goals", current_situation: "📌 Situation",
-  personality: "✨ Personality", topics_discussed: "💬 Topics",
-};
-
-const DEPTH_STAGES = [
-  { name: "Intro",           threshold: 0,  pct: 10  },
-  { name: "Getting to Know", threshold: 4,  pct: 50  },
-  { name: "Deep Dive",       threshold: 10, pct: 100 },
-];
+const FALLBACK_TRENDS = config.fallbackTrends;
+const TREND_ICONS = Object.fromEntries(config.trendingCategories.map(c => [c.category, c.icon]));
+const MEM_LABELS = Object.fromEntries(config.memorySchema.map(m => [m.key, m.label]));
+const DEPTH_STAGES = config.depthStages;
+const EXTRACT_KEYS = config.memorySchema.filter(m => m.extract);
+const BATCH_SIZE = config.memoryBatchSize || 5;
 
 /* ── Secure API call through our backend ────── */
 async function callAPI(messages, systemPrompt) {
@@ -98,59 +85,36 @@ export default function AgentX() {
     msgEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, typing]);
 
-  /* ── System prompt builders (depth-aware) ──── */
+  /* ── System prompt builders (depth-aware, config-driven) ── */
   const ownerSys = useCallback((greeting = false) => {
     const mem = Object.keys(memoryRef.current).length
       ? `What you know about this person: ${JSON.stringify(memoryRef.current)}`
       : "You don't know much yet — learn as you go.";
 
-    // Calculate depth for system prompt
     const userMsgCount = historyRef.current.filter(m => m.role === "user").length;
-    let depthRules = "";
-    if (userMsgCount < 4) {
-      // INTRO — warm, welcoming, profile-building
-      depthRules = `Conversation Stage: INTRO (${userMsgCount}/4 messages)
-- Be warm and welcoming. Focus on getting to know them.
-- Ask gentle, open-ended questions about their life, interests, or background.
-- If they share a fact (name, location, hobby), acknowledge it enthusiastically.
-- Keep the tone light and friendly. Don't go too deep yet.`;
-    } else if (userMsgCount < 10) {
-      // GETTING TO KNOW — personalized, connecting dots
-      depthRules = `Conversation Stage: GETTING TO KNOW (${userMsgCount}/10 messages)
-- You're now familiar with this person. Reference their known interests and goals.
-- Start connecting the current topic to things they've told you before.
-- If they mentioned an interest, relate the topic back to it naturally.
-- Be more specific and thoughtful in your responses. Show you're paying attention.
-- Share interesting facts, analogies, or perspectives relevant to their background.`;
-    } else {
-      // DEEP DIVE — intellectual, insightful, challenging
-      depthRules = `Conversation Stage: DEEP DIVE (${userMsgCount} messages deep)
-- You know this person well now. Act like a brilliant, trusted friend.
-- Offer profound insights, unique perspectives, and nuanced analysis.
-- Respectfully challenge their views when appropriate — push them to think deeper.
-- Reference specific things they said in earlier messages to show continuity.
-- Provide advanced, technical, or philosophical depth when the topic allows.
-- Your tone should be confident, engaging, and intellectually stimulating.`;
+    let currentStage = DEPTH_STAGES[0];
+    for (const s of DEPTH_STAGES) {
+      if (userMsgCount >= s.threshold) currentStage = s;
     }
+    const depthRules = `Conversation Stage: ${currentStage.name.toUpperCase()} (${userMsgCount} messages)\n` +
+      currentStage.rules.map(r => `- ${r}`).join("\n");
 
-    return `You are AgentX, a curious and evolving AI conversation buddy.
+    const coreRules = config.coreRules.map(r => `- ${r}`).join("\n");
+
+    return `${config.personality}
 Current topic: "${topicRef.current}"
 ${mem}
 
 ${depthRules}
 
 Core Rules:
-- Keep replies to 3-5 sentences. Be engaging and natural.
-- Ask exactly ONE follow-up question per reply.
+${coreRules}
 ${greeting ? "- Open with an exciting hook about the topic." : ""}`;
   }, []);
 
   const visitorSys = useCallback(() => {
     const name = ownerMem.name || "this person";
-    return `You are ${name}'s personal AI buddy.
-You know everything about them: ${JSON.stringify(ownerMem)}
-A visitor is talking to you. Answer their questions about ${name} warmly and naturally.
-If you don't know something, say so honestly. Keep replies 3-4 sentences.`;
+    return config.visitorGreeting(name) + `\nYou know everything about them: ${JSON.stringify(ownerMem)}`;
   }, [ownerMem]);
 
   /* ── Depth calculation ─────────────────────── */
@@ -173,10 +137,14 @@ If you don't know something, say so honestly. Keep replies 3-4 sentences.`;
 
   /* ── Memory extraction (batched) ───────────── */
   const extractMemory = useCallback(async (batch) => {
+    const extractableKeys = EXTRACT_KEYS.map(m => {
+      const typeHint = m.type === "array" ? " (array)" : "";
+      return `${m.key}${typeHint}`;
+    }).join(", ");
     const p = `Extract personal facts about the user from these messages.
 Messages: "${batch}"
 Existing memory: ${JSON.stringify(memoryRef.current)}
-Return ONLY a JSON object with new or updated keys: name, age, location, background, interests (array), goals (array), current_situation, personality
+Return ONLY a JSON object with new or updated keys: ${extractableKeys}
 Return {} if nothing new. No extra text.`;
     try {
       const raw  = await callAPI([{ role: "user", content: p }]);
@@ -206,11 +174,10 @@ Return {} if nothing new. No extra text.`;
   const fetchTrends = useCallback(async () => {
     try {
       const cached = JSON.parse(localStorage.getItem("ax_trends") || "null");
-      if (cached && Date.now() - cached.ts < 3600000) return cached.data;
+      if (cached && Date.now() - cached.ts < (config.trendCacheDuration || 3600000)) return cached.data;
     } catch {}
-    const prompt = `Return ONLY a JSON array of 4 trending topics from today.
-[{"category":"Tech","topic":"one line"},{"category":"Sports","topic":"one line"},{"category":"Science","topic":"one line"},{"category":"World","topic":"one line"}]
-No extra text. No markdown.`;
+    const cats = config.trendingCategories.map(c => `{"category":"${c.category}","topic":"one line"}`).join(",");
+    const prompt = `Return ONLY a JSON array of ${config.trendingCategories.length} trending topics from today.\n[${cats}]\nNo extra text. No markdown.`;
     try {
       const raw  = await callAPI([{ role: "user", content: prompt }]);
       const data = JSON.parse(raw.replace(/```json|```/g, "").trim());
@@ -280,7 +247,7 @@ No extra text. No markdown.`;
       // Batched memory extraction — every 5th message
       if (!isVisitor) {
         memQueueRef.current.push(text);
-        if (memQueueRef.current.length >= 5) {
+        if (memQueueRef.current.length >= BATCH_SIZE) {
           const batch = memQueueRef.current.splice(0).join(". ");
           setTimeout(() => extractMemory(batch), 3000);
         }
@@ -558,8 +525,8 @@ Rules:
       {/* ═══ HEADER ═══ */}
       <header className="header">
         <div className="logo">
-          <div className="logo-icon">🤖</div>
-          AgentX
+          <div className="logo-icon">{config.emoji}</div>
+          {config.name}
         </div>
         <div className="header-right">
           <div className={`topic-pill${screen === "chat" ? " visible" : ""}`}>
@@ -583,8 +550,8 @@ Rules:
           {/* Screen: Name */}
           <div className={`screen${screen !== "name" ? " hidden" : ""}`}>
             <div>
-              <div className="screen-title">Hey there! 👋<br />I&apos;m your <em>AI Conversation Buddy</em></div>
-              <div className="screen-sub">I remember everything about you and get smarter the more we talk.</div>
+              <div className="screen-title">Hey there! 👋<br />I&apos;m your <em>{config.tagline}</em></div>
+              <div className="screen-sub">{config.description}</div>
             </div>
             <form className="name-wrap" onSubmit={submitName}>
               <input id="nameInput" type="text" placeholder="What's your name?" />
@@ -627,14 +594,14 @@ Rules:
             {messages.map((m, i) => (
               <div key={i} className={`msg ${m.role}`}>
                 <div className={`avatar ${m.role === "agent" ? "agent" : "user-avatar"}`}>
-                  {m.role === "agent" ? "🤖" : userInit}
+                  {m.role === "agent" ? config.emoji : userInit}
                 </div>
                 <div className="bubble" dangerouslySetInnerHTML={{ __html: m.text.replace(/\n/g, "<br>") }} />
               </div>
             ))}
             {typing && (
               <div className="msg agent">
-                <div className="avatar agent">🤖</div>
+                <div className="avatar agent">{config.emoji}</div>
                 <div className="bubble">
                   <div className="typing"><span></span><span></span><span></span></div>
                 </div>

@@ -3,7 +3,10 @@
  * 
  * This API route keeps the Gemini API key hidden on the server.
  * The frontend calls POST /api/chat instead of calling Google directly.
+ * Model is configured in agent.config.js
  */
+
+import config from "../../../agent.config";
 
 export async function POST(request) {
   const API_KEY = process.env.GEMINI_API_KEY;
@@ -35,7 +38,8 @@ export async function POST(request) {
       body.system_instruction = { parts: [{ text: systemPrompt }] };
     }
 
-    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${API_KEY}`;
+    const model = config.model || "gemini-2.5-flash-lite";
+    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${API_KEY}`;
 
     // Retry logic for rate limiting
     let lastError = null;
